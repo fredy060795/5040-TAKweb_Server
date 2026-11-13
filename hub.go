@@ -183,6 +183,7 @@ func (h *Hub) FromClient(c *Client, raw []byte) {
 	}
 	in, _ := c.groups()
 	h.route(raw, ev, c, "", in)
+	h.srv.mesh.Downlink(raw, ev)
 }
 
 func (h *Hub) trackSA(c *Client, ev *Event, raw []byte) {
@@ -266,6 +267,7 @@ func (h *Hub) FromFederation(l fedSource, raw []byte) {
 		h.mu.Unlock()
 	}
 	h.route(raw, ev, nil, l.sourceID(), l.localGroups())
+	h.srv.mesh.Downlink(raw, ev)
 }
 
 // FromMesh handles an event the server made from a Meshtastic radio's MQTT message (meshtastic.go): visible to
@@ -357,6 +359,7 @@ func (h *Hub) ServerBroadcast(raw []byte) {
 		return
 	}
 	h.route(raw, ev, nil, "", nil)
+	h.srv.mesh.Downlink(raw, ev)
 }
 
 // Contacts known to the server (latest positions), for the map and the client list.

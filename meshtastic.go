@@ -12,6 +12,7 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -164,6 +165,7 @@ type meshKey struct {
 	name string
 	key  []byte // AES key; nil = not encrypted
 	hash uint8
+	down bool // downlink allowed: TAK traffic from the server goes into this channel
 }
 
 func meshExpandPSK(psk []byte) []byte {
@@ -200,9 +202,15 @@ func newMeshKey(name string, psk []byte) meshKey {
 
 // channel link https://meshtastic.org/e/#<base64url ChannelSet> -> the channels (name + PSK) in it
 func parseChannelURL(u string) (names []string, psks [][]byte, lora pbMsg, err error) {
+	names, psks, _, lora, err = parseChannelLink(u)
+	return
+}
+
+// parseChannelLink: like parseChannelURL, with the downlink flag of each channel
+func parseChannelLink(u string) (names []string, psks [][]byte, downs []bool, lora pbMsg, err error) {
 	i := strings.Index(u, "#")
 	if i < 0 {
-		return nil, nil, nil, errors.New("no # in the channel link")
+		return nil, nil, nil, nil, errors.New("no # in the channel link")
 	}
 	frag := u[i+1:]
 	if j := strings.Index(frag, "?"); j >= 0 {
@@ -214,11 +222,11 @@ func parseChannelURL(u string) (names []string, psks [][]byte, lora pbMsg, err e
 	frag = strings.TrimRight(strings.NewReplacer("-", "+", "_", "/").Replace(frag), "=")
 	raw, err := base64.RawStdEncoding.DecodeString(frag)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("channel link: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("channel link: %w", err)
 	}
 	set, err := pbDecode(raw)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	lora = set.sub(2)
 	for _, f := range set {
@@ -231,8 +239,9 @@ func parseChannelURL(u string) (names []string, psks [][]byte, lora pbMsg, err e
 		}
 		names = append(names, cs.str(3))
 		psks = append(psks, cs.bytes(2))
+		downs = append(downs, cs.u(6) != 0)
 	}
-	return names, psks, lora, nil
+	return names, psks, downs, lora, nil
 }
 
 // presetName: the channel name Meshtastic uses for an empty name (the modem preset, e.g. "LongFast")
@@ -276,18 +285,24 @@ func (s *Server) meshKeys() map[string]meshKey {
 	s.store.Read(func(st *State) {
 		for _, c := range st.Mesh {
 			if c.URL != "" {
-				if names, psks, lora, err := parseChannelURL(c.URL); err == nil {
+				if names, psks, downs, lora, err := parseChannelLink(c.URL); err == nil {
 					for i, n := range names {
 						if n == "" {
 							n = presetName(int(lora.u(2)))
 						}
-						out[n] = newMeshKey(n, psks[i])
+						k := newMeshKey(n, psks[i])
+						k.down = downs[i]
+						out[n] = k
 					}
 					continue
 				}
 			}
 			if psk, err := base64.StdEncoding.DecodeString(c.PSK); err == nil && c.Name != "" {
-				out[c.Name] = newMeshKey(c.Name, psk)
+				k := newMeshKey(c.Name, psk)
+				var d map[string]any
+				json.Unmarshal([]byte(c.Data), &d)
+				k.down = d["downlink_enabled"] != false
+				out[c.Name] = k
 			}
 		}
 	})
@@ -384,6 +399,10 @@ type Meshtastic struct {
 	nodes map[uint32]*meshNode
 	seen  map[uint64]time.Time
 	stats map[string]*GatewayStat
+
+	down      *Downlink
+	rootsSeen map[string]map[string]bool // channel -> root topics radios use
+	sent      int64                      // packets sent into the mesh
 }
 
 type GatewayStat struct {
@@ -395,7 +414,9 @@ type GatewayStat struct {
 }
 
 func NewMeshtastic(s *Server) *Meshtastic {
-	return &Meshtastic{srv: s, nodes: map[uint32]*meshNode{}, seen: map[uint64]time.Time{}, stats: map[string]*GatewayStat{}}
+	m := &Meshtastic{srv: s, nodes: map[uint32]*meshNode{}, seen: map[uint64]time.Time{}, stats: map[string]*GatewayStat{}, rootsSeen: map[string]map[string]bool{}}
+	m.down = newDownlink(m)
+	return m
 }
 
 func meshDetail(p *meshPacket) string {
@@ -462,7 +483,15 @@ func (m *Meshtastic) Handle(topic string, body []byte, username string) [][]byte
 	if p.ChannelName == "" {
 		p.ChannelName = parts[len(parts)-2]
 	}
+	if p.From == m.serverNode() {
+		return nil // our own downlink, heard again
+	}
 	m.mu.Lock()
+	root := strings.Join(parts[:len(parts)-4], "/")
+	if m.rootsSeen[p.ChannelName] == nil {
+		m.rootsSeen[p.ChannelName] = map[string]bool{}
+	}
+	m.rootsSeen[p.ChannelName][root] = true
 	gs := m.stats[p.Gateway]
 	if gs == nil {
 		gs = &GatewayStat{Gateway: p.Gateway}

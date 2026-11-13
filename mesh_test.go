@@ -184,3 +184,82 @@ func TestMQTTMeshtasticToTAK(t *testing.T) {
 	}
 	_ = binary.LittleEndian
 }
+
+// opens what the server sent into the mesh
+func openDown(t *testing.T, body []byte, key meshKey) *meshPacket {
+	t.Helper()
+	p, err := openEnvelope(body, map[string]meshKey{key.name: key})
+	if err != nil {
+		t.Fatalf("downlink not readable: %v", err)
+	}
+	return p
+}
+
+func TestMeshDownlink(t *testing.T) {
+	downInterval = 50 * time.Millisecond
+	defer func() { downInterval = 3 * time.Second }()
+	srv := startServer(t, "A")
+	srv.CreateUser("radio", "radio-pass-1", false, nil)
+	link := channelURL("TAK", bytes.Repeat([]byte{4}, 32), "LONG_FAST", "EU_868", true, true, 3, 32)
+	noDown := channelURL("QUIET", bytes.Repeat([]byte{5}, 16), "LONG_FAST", "EU_868", true, false, 3, 32)
+	srv.store.Update(func(s *State) {
+		s.Mesh = append(s.Mesh, &MeshChannel{ID: 1, URL: link}, &MeshChannel{ID: 2, URL: noDown})
+	})
+	key := srv.meshKeys()["TAK"]
+	gw, _ := dialMQTT(t, srv.ports.MQTT, "radio", "radio-pass-1", "!00000001")
+	gw.subscribe("msh/EU/2/e/#")
+	// the radio uses the root "msh/EU": the server learns it from what the radio sends
+	gw.publish("msh/EU/2/e/TAK/!00000001", envelope(t, key, 0x0a0b0c0d, 1, portATAK, takPLI("ANDROID-77", "Bravo", 47.26, 11.39), "!00000001"))
+	time.Sleep(200 * time.Millisecond)
+
+	dev := dialTCP(t, srv.ports.TCP)
+	dev.send(sa("ATAK-HQ", "HQ"))
+	now := time.Now()
+	dev.send(fmt.Sprintf(`<event version="2.0" uid="GeoChat.ATAK-HQ.All Chat Rooms.m1" type="b-t-f" how="h-g-i-g-o" time="%s" start="%s" stale="%s"><point lat="0" lon="0" hae="0" ce="9999999" le="9999999"/><detail><__chat parent="RootContactGroup" groupOwner="false" messageId="m1" chatroom="All Chat Rooms" id="All Chat Rooms" senderCallsign="HQ"><chatgrp uid0="ATAK-HQ" uid1="All Chat Rooms" id="All Chat Rooms"/></__chat><link uid="ATAK-HQ" type="a-f-G-U-C" relation="p-p"/><remarks source="BAO.F.ATAK.ATAK-HQ" to="All Chat Rooms" time="%s">Move to checkpoint 2</remarks></detail></event>`,
+		cotTime(now), cotTime(now), cotTime(now.Add(time.Hour)), cotTime(now)))
+
+	var gotChat, gotText, gotPLI bool
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !(gotChat && gotText && gotPLI) {
+		typ, _, body := gw.read()
+		if typ != mqttPublish {
+			continue
+		}
+		topic, payload, _ := mqttString(body)
+		if !strings.HasPrefix(topic, "msh/EU/2/e/TAK/!") {
+			t.Fatalf("topic %s", topic)
+		}
+		p := openDown(t, payload, key)
+		if p.From != srv.mesh.serverNode() || p.To != 0xffffffff {
+			t.Fatalf("from/to %x %x", p.From, p.To)
+		}
+		switch p.Port {
+		case portText:
+			gotText = string(p.Payload) == "HQ: Move to checkpoint 2"
+		case portATAK:
+			tp, _ := pbDecode(p.Payload)
+			if ch := tp.sub(6); ch != nil {
+				gotChat = ch.str(1) == "Move to checkpoint 2" && ch.str(2) == allChat && tp.sub(2).str(2) == "ATAK-HQ|m1"
+			} else if pl := tp.sub(5); pl != nil {
+				gotPLI = tp.sub(2).str(2) == "ATAK-HQ" && int32(uint32(pl.u(1))) == int32(48.1*1e7)
+			}
+		}
+	}
+	if !gotChat || !gotText || !gotPLI {
+		t.Fatalf("downlink chat %v text %v position %v", gotChat, gotText, gotPLI)
+	}
+	// a position again right away: not sent (5 min), and what came from the mesh never goes back
+	dev.send(sa("ATAK-HQ", "HQ"))
+	time.Sleep(300 * time.Millisecond)
+	if srv.mesh.down.Pending() != 0 {
+		t.Fatal("position sent again too early")
+	}
+	srv.hub.FromMesh(cotEvent("MESH-!0000beef", "a-f-G-E-S", "m-g", time.Now(), time.Minute, 1, 1, "", `<contact callsign="x" endpoint="MQTT"/><takv platform="Meshtastic"/><__mqtt gateway="!1"/>`))
+	if srv.mesh.down.Pending() != 0 {
+		t.Fatal("mesh event went back down")
+	}
+	// own downlink heard again by a gateway: ignored
+	if out := srv.mesh.Handle("msh/EU/2/e/TAK/!00000001", envelope(t, key, srv.mesh.serverNode(), 99, portText, []byte("x"), "!00000001"), "radio"); out != nil {
+		t.Fatal("own packet handled")
+	}
+}

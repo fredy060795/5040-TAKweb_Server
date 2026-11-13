@@ -159,6 +159,8 @@ func (s *Server) Start() error {
 		logf("WARNING video server: %v", err)
 	}
 	s.fed.Start()
+	s.wg.Add(1)
+	go func() { defer s.wg.Done(); s.mesh.down.run(s.ctx.Done()) }()
 	s.bridges.Start()
 	s.wg.Add(1)
 	go s.maintenance()
