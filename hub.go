@@ -183,6 +183,7 @@ func (h *Hub) FromClient(c *Client, raw []byte) {
 	}
 	in, _ := c.groups()
 	h.route(raw, ev, c, "", in)
+	h.srv.mesh.Downlink(raw, ev)
 }
 
 func (h *Hub) trackSA(c *Client, ev *Event, raw []byte) {
@@ -266,6 +267,36 @@ func (h *Hub) FromFederation(l fedSource, raw []byte) {
 		h.mu.Unlock()
 	}
 	h.route(raw, ev, nil, l.sourceID(), l.localGroups())
+	h.srv.mesh.Downlink(raw, ev)
+}
+
+// FromMesh handles an event the server made from a Meshtastic radio's MQTT message (meshtastic.go): visible to
+// everyone (like OpenTAKServer), kept as the latest position, passed on to federated servers.
+func (h *Hub) FromMesh(raw []byte) {
+	ev, err := ParseEvent(raw)
+	if err != nil {
+		return
+	}
+	if ev.IsSA() {
+		h.mu.Lock()
+		h.latest[ev.UID] = &cachedSA{raw: raw, ev: ev, at: time.Now()}
+		h.mu.Unlock()
+		h.srv.store.Update(func(s *State) {
+			e := s.EUDs[ev.UID]
+			if e == nil {
+				e = &EUD{UID: ev.UID}
+				s.EUDs[ev.UID] = e
+			}
+			e.Callsign = ev.Callsign()
+			if t := ev.Detail.Takv; t != nil {
+				e.Device, e.Platform = t.Device, t.Platform
+			}
+			e.Lat, e.Lon = ev.Point.Lat, ev.Point.Lon
+			e.LastEventTime = time.Now()
+			e.LastStatus = "Mesh (MQTT)"
+		})
+	}
+	h.route(raw, ev, nil, "", nil)
 }
 
 func (h *Hub) fedTag() string { return "WebTAK-Server-" + h.srv.store.Config().ServerUID }
@@ -328,6 +359,7 @@ func (h *Hub) ServerBroadcast(raw []byte) {
 		return
 	}
 	h.route(raw, ev, nil, "", nil)
+	h.srv.mesh.Downlink(raw, ev)
 }
 
 // Contacts known to the server (latest positions), for the map and the client list.

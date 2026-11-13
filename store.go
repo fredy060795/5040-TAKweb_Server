@@ -32,6 +32,9 @@ type Config struct {
 	VideoFedShare bool    `json:"videoFedShare"` // offer video feeds to federated servers
 	Lat           float64 `json:"lat"`           // position of this server (marker of the TAK server bridge)
 	Lon           float64 `json:"lon"`           //
+
+	MQTTOff   bool `json:"mqttOff"`   // no MQTT broker for Meshtastic radios (port 8883)
+	MQTTPlain bool `json:"mqttPlain"` // also MQTT without TLS on port 1883
 }
 
 type Membership struct {

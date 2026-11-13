@@ -391,6 +391,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		})
 		s.bridges.Reconcile()
 		writeJSON(w, 200, map[string]any{"ok": true})
+	case route == "meshtastic" && m == "GET":
+		writeJSON(w, 200, s.mesh.Status())
 	case route == "settings" && m == "GET":
 		writeJSON(w, 200, s.settingsView())
 	case route == "settings" && m == "PUT":
@@ -911,7 +913,7 @@ func (s *Server) settingsView() map[string]any {
 		"certPassword": c.CertPassword, "webCert": c.WebCert, "webKey": c.WebKey, "fedEnabled": c.FedEnabled,
 		"sendLatestSa": c.SendLatestSA, "contactMaxAge": c.ContactMaxAge, "dataDir": s.dataDir,
 		"videoEnabled": c.VideoEnabled, "videoReadAuth": c.VideoReadAuth, "mediamtxPath": c.MediaMTXPath, "videoFedShare": c.VideoFedShare,
-		"lat": c.Lat, "lon": c.Lon}
+		"lat": c.Lat, "lon": c.Lon, "mqttOn": !c.MQTTOff, "mqttPlain": c.MQTTPlain}
 }
 
 func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
@@ -931,6 +933,8 @@ func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
 		MediaMTXPath  *string `json:"mediamtxPath"`
 		VideoFedShare *bool
 		Lat, Lon      *float64
+		MQTTOn        *bool `json:"mqttOn"`
+		MQTTPlain     *bool `json:"mqttPlain"`
 	}
 	if err := readJSON(r, &b); err != nil {
 		jsonErr(w, 400, err.Error())
@@ -997,6 +1001,14 @@ func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if b.VideoFedShare != nil {
 			c.VideoFedShare = *b.VideoFedShare
+		}
+		if b.MQTTOn != nil && *b.MQTTOn == c.MQTTOff {
+			c.MQTTOff = !*b.MQTTOn
+			restart = true
+		}
+		if b.MQTTPlain != nil && *b.MQTTPlain != c.MQTTPlain {
+			c.MQTTPlain = *b.MQTTPlain
+			restart = true
 		}
 		if b.Lat != nil && b.Lon != nil && *b.Lat >= -90 && *b.Lat <= 90 && *b.Lon >= -180 && *b.Lon <= 180 {
 			c.Lat, c.Lon = *b.Lat, *b.Lon

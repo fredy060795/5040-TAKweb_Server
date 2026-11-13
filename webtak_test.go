@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -188,11 +189,22 @@ func TestOTSMeshtasticAPI(t *testing.T) {
 	if code, b := do("GET", "/api/meshtastic/generate_psk", ""); code != 200 || !strings.Contains(b, `"psk"`) {
 		t.Fatalf("psk: %s", b)
 	}
-	do("POST", "/api/meshtastic/channel", `{"name":"LongFast","url":"https://meshtastic.org/e/#x","psk":"AQ=="}`)
-	if code, b := do("GET", "/api/meshtastic/channel?per_page=200", ""); code != 200 || !strings.Contains(b, "LongFast") {
+	link := channelURL("LongFast", []byte{1}, "LONG_FAST", "EU_868", true, true, 3, 32)
+	if code, b := do("POST", "/api/meshtastic/channel", `{"url":"https://meshtastic.org/e/#x"}`); code != 400 {
+		t.Fatalf("unreadable link accepted: %s", b)
+	}
+	do("POST", "/api/meshtastic/channel", `{"url":"`+link+`"}`)
+	// created by name like in OTS: the server makes the link
+	if code, b := do("POST", "/api/meshtastic/channel", `{"name":"TAK","psk":"`+base64.StdEncoding.EncodeToString(make([]byte, 32))+`","modem_preset":"LONG_FAST","lora_region":"EU_868"}`); code != 200 {
+		t.Fatalf("by name: %s", b)
+	}
+	if code, b := do("GET", "/api/meshtastic/channel?per_page=200", ""); code != 200 || !strings.Contains(b, "LongFast") || !strings.Contains(b, `"name":"TAK","psk"`) || !strings.Contains(b, "https://meshtastic.org/e/#") {
 		t.Fatalf("list: %s", b)
 	}
-	do("DELETE", "/api/meshtastic/channel?url=https%3A%2F%2Fmeshtastic.org%2Fe%2F%23x", "")
+	if keys := srv.meshKeys(); len(keys["LongFast"].key) != 16 || len(keys["TAK"].key) != 32 {
+		t.Fatalf("keys: %v", keys)
+	}
+	do("DELETE", "/api/meshtastic/channel?url="+url.QueryEscape(link), "")
 	if _, b := do("GET", "/api/meshtastic/channel", ""); strings.Contains(b, "LongFast") {
 		t.Fatal("not deleted")
 	}
