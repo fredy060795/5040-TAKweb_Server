@@ -480,6 +480,8 @@ func (s *Server) handleOTSAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		otsOK(w, "Stream deleted")
+	case p == "/api/meshtastic/gateways" && m == "GET": // WebTAK extension: radios, gateways, link quality
+		writeJSON(w, 200, s.mesh.Status())
 	case p == "/api/meshtastic/generate_psk":
 		writeJSON(w, 200, map[string]any{"psk": base64.StdEncoding.EncodeToString(randomBytes(32))})
 	case p == "/api/meshtastic/channel" && m == "GET":

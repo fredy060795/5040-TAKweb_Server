@@ -153,6 +153,14 @@ WebTAK → Meshtastic) the server opens the encrypted packets with the channel k
 - Radios at different places that use the same server are **linked over the internet** (the broker passes their
   messages to each other, as on any Meshtastic MQTT server).
 
+- **Back into the mesh (downlink):** in channels with downlink on, TAK group chat (also as plain text for the
+  Meshtastic app), direct messages to TAK users heard on the mesh and the positions of the TAK users go to the radios –
+  a position at most every 5 minutes, one packet every 3 seconds, so LoRa is not flooded.
+- **Markers, drawings, routes, deletions** from the mesh (ATAK plugin / TAKweb, port 257, also the multi-packet
+  "fountain" transfers) reach every TAK device; the sender gets the acknowledgement.
+- Page **Meshtastic** in the web interface: gateways, connected radios, every radio heard with the way it came (gateway,
+  hops), signal at the gateway (SNR/RSSI), battery and position. The same as JSON for tools: `/api/meshtastic/gateways`.
+
 Radio settings (WebTAK's *Set up a radio* does this): MQTT on, address `<server>:8883`, TLS on, encryption on, root
 topic `opentakserver` (any root works), the channel with *uplink* on. A channel created only by name gets its
 Meshtastic link (`https://meshtastic.org/e/#…`) from the server, like in OTS.
@@ -192,8 +200,7 @@ these ports in your router, or use **ZeroTier/Tailscale** (no port forwarding, a
   OpenTAKServer work unchanged. Tested with
   **WebTAK** (port 5036) – enter `https://<server>:8443` as OTS address with an admin login and allow the
   self-signed certificate.
-- **Not included** (compared to OTS): video recording, sending TAK traffic back down into the mesh over MQTT
-  (downlink; TAKweb phones with a radio do that), Mumble, mission logs/keywords/external data and mission federation, TAK protocol
+- **Not included** (compared to OTS): video recording, Mumble, mission logs/keywords/external data and mission federation, TAK protocol
   version 1 (protobuf – devices automatically stay on XML). Federation is between WebTAK Servers (own protocol); other
   TAK servers are linked through the bridge (official TAK Server federation on port 9001 is not supported).
 

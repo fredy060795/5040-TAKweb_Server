@@ -23,11 +23,12 @@ import (
 )
 
 const (
-	portText     = 1
-	portPosition = 3
-	portNodeInfo = 4
-	portATAK     = 72
-	allChat      = "All Chat Rooms"
+	portText      = 1
+	portPosition  = 3
+	portNodeInfo  = 4
+	portATAK      = 72
+	portTelemetry = 67
+	allChat       = "All Chat Rooms"
 )
 
 var meshTeams = []string{"", "White", "Yellow", "Orange", "Magenta", "Red", "Maroon", "Purple", "Dark Blue", "Blue", "Cyan", "Teal", "Green", "Dark Green", "Brown"}
@@ -388,9 +389,16 @@ type meshNode struct {
 	Long, Short, HW string
 	TakUID          string
 	Battery         int
+	Voltage         float32
 	Lat, Lon        float64
 	Alt             int32
 	Heard           time.Time
+	PosTime         time.Time
+	Gateway         string  // radio that uplinked the last packet
+	Hops            int     // hops of the last packet (-1 unknown)
+	SNR             float32 // at the gateway (only for direct = 0 hops meaningful)
+	RSSI            int32
+	Packets         int64
 }
 
 type Meshtastic struct {
@@ -518,6 +526,11 @@ func (m *Meshtastic) Handle(topic string, body []byte, username string) [][]byte
 		m.nodes[p.From] = n
 	}
 	n.Heard = now
+	n.Packets++
+	n.Gateway, n.SNR, n.RSSI, n.Hops = p.Gateway, p.SNR, p.RSSI, -1
+	if p.HopStart >= p.HopLimit && p.HopStart > 0 {
+		n.Hops = int(p.HopStart - p.HopLimit)
+	}
 	m.mu.Unlock()
 
 	var out [][]byte
@@ -531,6 +544,9 @@ func (m *Meshtastic) Handle(topic string, body []byte, username string) [][]byte
 		}
 		m.mu.Lock()
 		n.Long, n.Short = u.str(2), u.str(3)
+		if hw := int(u.u(5)); hw > 0 {
+			n.HW = fmt.Sprint(hw)
+		}
 		has := n.Lat != 0 || n.Lon != 0
 		m.mu.Unlock()
 		if has && n.TakUID == "" {
@@ -543,6 +559,7 @@ func (m *Meshtastic) Handle(topic string, body []byte, username string) [][]byte
 		}
 		m.mu.Lock()
 		n.Lat, n.Lon, n.Alt = float64(int32(uint32(pos.u(1))))/1e7, float64(int32(uint32(pos.u(2))))/1e7, pos.i32(3)
+		n.PosTime = now
 		tak := n.TakUID
 		m.mu.Unlock()
 		if (n.Lat != 0 || n.Lon != 0) && tak == "" {
@@ -614,6 +631,22 @@ func (m *Meshtastic) Handle(topic string, body []byte, username string) [][]byte
 			}
 			out = append(out, chatEvent(uid, callsign, msgID, chat.str(1), to, extra))
 		}
+	case portTelemetry:
+		tm, err := pbDecode(p.Payload)
+		if err != nil {
+			return nil
+		}
+		if dm := tm.sub(2); dm != nil {
+			m.mu.Lock()
+			if dm.has(1) {
+				n.Battery = int(dm.u(1))
+			}
+			if dm.has(2) {
+				n.Voltage = dm.float(2)
+			}
+			m.mu.Unlock()
+		}
+		return nil
 	case portForward:
 		if xml := m.forwarder(p); xml != nil {
 			if raw := forwardedCoT(xml, extra); raw != nil {
@@ -645,6 +678,36 @@ func (m *Meshtastic) nodeCoT(num uint32, n *meshNode, extra string) []byte {
 	d := fmt.Sprintf(`<contact callsign="%s" endpoint="MQTT"/><__group name="%s" role="Team Member"/><takv platform="Meshtastic" device="%s" meshtastic_id="%08x"/><remarks>Meshtastic %s</remarks><__meshtastic/>`,
 		xmlEscape(cs), team, xmlEscape(n.HW), num, nodeID(num))
 	return cotEvent("MESH-"+nodeID(num), "a-f-G-E-S", "m-g", time.Now(), 30*time.Minute, n.Lat, n.Lon, hae, d+extra)
+}
+
+// Status: gateways, connected radios, every node heard over MQTT – for the web UI and tools (TAKweb's network view)
+func (m *Meshtastic) Status() map[string]any {
+	keys := m.srv.meshKeys()
+	var chans []map[string]any
+	for name, k := range keys {
+		chans = append(chans, map[string]any{"name": name, "downlink": k.down, "encrypted": k.key != nil})
+	}
+	m.mu.Lock()
+	var nodes []map[string]any
+	for num, n := range m.nodes {
+		item := map[string]any{"id": nodeID(num), "longName": n.Long, "shortName": n.Short, "takUid": n.TakUID, "heard": n.Heard,
+			"gateway": n.Gateway, "hops": n.Hops, "snr": n.SNR, "rssi": n.RSSI, "packets": n.Packets}
+		if n.Lat != 0 || n.Lon != 0 {
+			item["lat"], item["lon"], item["positionTime"] = n.Lat, n.Lon, n.PosTime
+		}
+		if n.Battery >= 0 {
+			item["battery"] = n.Battery
+		}
+		if n.Voltage > 0 {
+			item["voltage"] = n.Voltage
+		}
+		nodes = append(nodes, item)
+	}
+	sent := m.sent
+	m.mu.Unlock()
+	return map[string]any{"gateways": m.Gateways(), "clients": m.srv.broker.Clients(), "nodes": nodes, "channels": chans,
+		"downlinkSent": sent, "downlinkPending": m.down.Pending(), "serverNode": nodeID(m.serverNode()),
+		"port": m.srv.ports.MQTT, "plainPort": m.srv.ports.MQTTPlain}
 }
 
 // Gateways: radios that sent to the broker (for the web UI and tools)

@@ -178,6 +178,16 @@ func TestMQTTMeshtasticToTAK(t *testing.T) {
 	gw1.publish("opentakserver/2/json/TAK/!00000001", []byte(`{}`))
 	time.Sleep(200 * time.Millisecond)
 
+	st := srv.mesh.Status()
+	found := false
+	for _, n := range st["nodes"].([]map[string]any) {
+		if n["id"] == "!0000beef" {
+			found = n["longName"] == "Relay Hill -12" && n["hops"] == 2 && n["gateway"] == "!00000001" && n["lat"] != nil
+		}
+	}
+	if !found {
+		t.Fatalf("status: %+v", st["nodes"])
+	}
 	gws := srv.mesh.Gateways()
 	if len(gws) != 2 { // gateway 2 only listened
 		t.Fatalf("gateways: %+v", gws)
