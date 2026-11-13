@@ -22,7 +22,7 @@ const (
 	linuxUnit   = "/etc/systemd/system/webtak-server.service"
 	linuxBin    = "/usr/local/bin/webtak-server"
 	linuxData   = "/var/lib/webtak-server"
-	allTCPPorts = "8088,8089,8443,8080,8446,9000"
+	allTCPPorts = "8088,8089,8443,8080,8446,9000,8883"
 	videoPorts  = "8554/tcp,1935/tcp,8888/tcp,8889/tcp,8890/udp,8189/udp,8000:8001/udp"
 )
 
