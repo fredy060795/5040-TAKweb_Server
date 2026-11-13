@@ -403,6 +403,7 @@ type Meshtastic struct {
 	down      *Downlink
 	rootsSeen map[string]map[string]bool // channel -> root topics radios use
 	sent      int64                      // packets sent into the mesh
+	transfers map[uint64]*ftnTransfer    // fountain transfers being received (port 257)
 }
 
 type GatewayStat struct {
@@ -612,6 +613,12 @@ func (m *Meshtastic) Handle(topic string, body []byte, username string) [][]byte
 				to = ""
 			}
 			out = append(out, chatEvent(uid, callsign, msgID, chat.str(1), to, extra))
+		}
+	case portForward:
+		if xml := m.forwarder(p); xml != nil {
+			if raw := forwardedCoT(xml, extra); raw != nil {
+				out = append(out, raw)
+			}
 		}
 	default:
 		return nil

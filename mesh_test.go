@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -261,5 +264,73 @@ func TestMeshDownlink(t *testing.T) {
 	// own downlink heard again by a gateway: ignored
 	if out := srv.mesh.Handle("msh/EU/2/e/TAK/!00000001", envelope(t, key, srv.mesh.serverNode(), 99, portText, []byte("x"), "!00000001"), "radio"); out != nil {
 		t.Fatal("own packet handled")
+	}
+}
+
+func TestForwarderFromTAKwebAndPlugin(t *testing.T) {
+	var v struct {
+		XML        string   `json:"xml"`
+		K          int      `json:"K"`
+		TransferID int      `json:"transferId"`
+		Blocks     []string `json:"blocks"`
+		Small      string   `json:"small"`
+		Indices    [][]int  `json:"indices"`
+	}
+	b, err := os.ReadFile("testdata/fountain.json") // made with TAKweb's meshproto.js
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.Unmarshal(b, &v)
+	for i, want := range v.Indices { // same block choice as java.util.Random in the plugin / TAKweb
+		seed := int(int32(uint32(v.TransferID)*31337)+int32(i*7919)) & 0xffff
+		if got := fountainIndices(seed, v.K, v.TransferID); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("block %d: %v, TAKweb %v", i, got, want)
+		}
+	}
+
+	downInterval = 50 * time.Millisecond
+	defer func() { downInterval = 3 * time.Second }()
+	srv := startServer(t, "A")
+	srv.CreateUser("radio", "radio-pass-1", false, nil)
+	link := channelURL("TAK", bytes.Repeat([]byte{6}, 32), "LONG_FAST", "EU_868", true, true, 3, 32)
+	srv.store.Update(func(s *State) { s.Mesh = append(s.Mesh, &MeshChannel{ID: 1, URL: link}) })
+	key := srv.meshKeys()["TAK"]
+	gw, _ := dialMQTT(t, srv.ports.MQTT, "radio", "radio-pass-1", "!00000001")
+	gw.subscribe("opentakserver/2/e/TAK/+")
+	dev := dialTCP(t, srv.ports.TCP)
+	dev.send(sa("ATAK-HQ", "HQ"))
+	time.Sleep(200 * time.Millisecond)
+	// blocks arrive in a different order, the first one twice
+	order := []int{1, 0, 0, 3, 2, 4, 5}
+	for n, i := range order {
+		if i >= len(v.Blocks) {
+			continue
+		}
+		blk, _ := base64.StdEncoding.DecodeString(v.Blocks[i])
+		gw.publish("opentakserver/2/e/TAK/!00000001", envelope(t, key, 0x77, uint32(500+n), portForward, blk, "!00000001"))
+	}
+	_, raw := dev.waitFor("marker from the mesh", uidIs("u-marker-1"))
+	if !strings.Contains(string(raw), "Seen at the bridge") || !strings.Contains(string(raw), `gateway="!00000001"`) {
+		t.Fatalf("marker: %s", raw)
+	}
+	// the sender gets the acknowledgement (so it stops repeating)
+	gotAck := false
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline) && !gotAck; {
+		if typ, _, body := gw.read(); typ == mqttPublish {
+			_, payload, _ := mqttString(body)
+			p := openDown(t, payload, key)
+			gotAck = p.Port == portForward && len(p.Payload) == ftnAckSize && p.Payload[6] == ftnComplete
+		}
+	}
+	if !gotAck {
+		t.Fatal("no fountain acknowledgement")
+	}
+	// a small one in one packet (deletion)
+	small, _ := base64.StdEncoding.DecodeString(v.Small)
+	gw.publish("opentakserver/2/e/TAK/!00000001", envelope(t, key, 0x77, 600, portForward, small, "!00000001"))
+	dev.waitFor("deletion", uidIs("d1"))
+	// passed down from a TAK server by a TAKweb gateway: not taken again
+	if forwardedCoT([]byte(`<event uid="x" type="a-h-G"><point lat="1" lon="1"/><detail><__takwebmesh/></detail></event>`), "") != nil {
+		t.Fatal("bridge copy taken")
 	}
 }
