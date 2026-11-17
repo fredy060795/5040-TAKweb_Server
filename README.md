@@ -138,6 +138,33 @@ Linux / macOS: downloaded automatically on the first start, or put `mediamtx` ne
 - The OTS video API (`/api/video_streams`, `/api/mediamtx/stream/add|update|delete`) is supported, so **WebTAK
   (port 5036)** registers its helmet/phone cameras here automatically, exactly as with OTS.
 
+## Meshtastic radios (MQTT)
+
+Like OpenTAKServer, the server has an **MQTT broker for Meshtastic** built in (port 8883, TLS). A radio with internet –
+e.g. a fixed "HQ gateway" radio in the headquarters WLAN – logs in with a user of this server and passes everything
+it hears on the mesh to the server. With the channel stored under Meshtastic (OTS API `/api/meshtastic/channel`,
+WebTAK → Meshtastic) the server opens the encrypted packets with the channel key and every TAK device sees:
+
+- **TAK users on the mesh** (ATAK Meshtastic plugin, TAKweb on a radio): position, team, role, battery, chat –
+  also when their phone is closed, as long as the radio reports its GPS.
+- **plain Meshtastic radios** as contacts `MESH-!xxxxxxxx` (name, position) and their messages in *All Chat Rooms*.
+- Every event carries `<__mqtt gateway="!…" channel="…" hops="…"/>`: which radio uplinked it and over how many hops
+  (TAKweb's *Network* view draws the exact way). A packet heard by several gateways is delivered once.
+- Radios at different places that use the same server are **linked over the internet** (the broker passes their
+  messages to each other, as on any Meshtastic MQTT server).
+
+- **Back into the mesh (downlink):** in channels with downlink on, TAK group chat (also as plain text for the
+  Meshtastic app), direct messages to TAK users heard on the mesh and the positions of the TAK users go to the radios –
+  a position at most every 5 minutes, one packet every 3 seconds, so LoRa is not flooded.
+- **Markers, drawings, routes, deletions** from the mesh (ATAK plugin / TAKweb, port 257, also the multi-packet
+  "fountain" transfers) reach every TAK device; the sender gets the acknowledgement.
+- Page **Meshtastic** in the web interface: gateways, connected radios, every radio heard with the way it came (gateway,
+  hops), signal at the gateway (SNR/RSSI), battery and position. The same as JSON for tools: `/api/meshtastic/gateways`.
+
+Radio settings (WebTAK's *Set up a radio* does this): MQTT on, address `<server>:8883`, TLS on, encryption on, root
+topic `opentakserver` (any root works), the channel with *uplink* on. A channel created only by name gets its
+Meshtastic link (`https://meshtastic.org/e/#…`) from the server, like in OTS.
+
 ## Ports
 
 | Port | Use |
@@ -148,6 +175,7 @@ Linux / macOS: downloaded automatically on the first start, or put `mediamtx` ne
 | 8443/tcp | web interface and Marti API (data packages) over HTTPS |
 | 8080/tcp | Marti API over HTTP; web interface only from the server computer itself |
 | 9000/tcp | federation |
+| 8883/tcp | MQTT with TLS for Meshtastic radios (1883 without TLS only if switched on) |
 | 8554/tcp | video RTSP (cameras send, ATAK plays) – 8000-8001/udp for RTSP over UDP |
 | 1935/tcp | video RTMP (DJI drones, OBS) |
 | 8890/udp | video SRT |
@@ -168,12 +196,11 @@ these ports in your router, or use **ZeroTier/Tailscale** (no port forwarding, a
 - **Groups like OTS / TAK Server:** IN = may send into the group, OUT = receives from it; `__ANON__` is the default group.
 - **OTS web API** (`/api/login`, `/api/user/*`, `/api/users`, `/api/groups`, `/api/eud`, `/api/atak_qr_string`,
   `/api/truststore`, `/api/profiles`, `/api/missions`, `/api/video_streams`, `/api/mediamtx/stream/*`,
-  `/api/meshtastic/channel`, `/api/meshtastic/generate_psk`): tools built for
+  `/api/meshtastic/channel`, `/api/meshtastic/generate_psk`, MQTT for Meshtastic): tools built for
   OpenTAKServer work unchanged. Tested with
   **WebTAK** (port 5036) – enter `https://<server>:8443` as OTS address with an admin login and allow the
   self-signed certificate.
-- **Not included** (compared to OTS): video recording, a Meshtastic gateway (channels are only stored; WebTAK talks to the
-  radios itself), Mumble, mission logs/keywords/external data and mission federation, TAK protocol
+- **Not included** (compared to OTS): video recording, Mumble, mission logs/keywords/external data and mission federation, TAK protocol
   version 1 (protobuf – devices automatically stay on XML). Federation is between WebTAK Servers (own protocol); other
   TAK servers are linked through the bridge (official TAK Server federation on port 9001 is not supported).
 

@@ -50,7 +50,7 @@ window.copy = copy;
 // ---------------------------------------------------------------- navigation
 
 const PAGES = [
-  ['dashboard', 'Dashboard'], ['connect', 'Connect devices'], ['users', 'Users'], ['groups', 'Groups'], ['devices', 'Devices'],
+  ['dashboard', 'Dashboard'], ['connect', 'Connect devices'], ['users', 'Users'], ['groups', 'Groups'], ['devices', 'Devices'], ['meshtastic', 'Meshtastic'],
   ['map', 'Map'], ['federation', 'Federation'], ['packages', 'Data packages'], ['video', 'Video'], ['settings', 'Settings'], ['log', 'Log'],
 ];
 
@@ -68,7 +68,7 @@ async function route() {
   const page = (location.hash || '#').slice(1) || (st.admin ? 'dashboard' : 'mydevice');
   const pages = st.admin ? PAGES : [['mydevice', 'My device']];
   $('#nav').innerHTML = pages.map(([id, name]) => `<a href="#${id}" class="${id === page ? 'active' : ''}">${name}</a>`).join('');
-  const fn = { dashboard: pageDashboard, connect: pageConnect, users: pageUsers, groups: pageGroups, devices: pageDevices, map: pageMap,
+  const fn = { dashboard: pageDashboard, connect: pageConnect, users: pageUsers, groups: pageGroups, devices: pageDevices, meshtastic: pageMeshtastic, map: pageMap,
     federation: pageFederation, packages: pagePackages, video: pageVideo, settings: pageSettings, log: pageLog, mydevice: pageMyDevice }[page];
   if (!fn || (!st.admin && page !== 'mydevice')) { location.hash = st.admin ? '#dashboard' : '#mydevice'; return; }
   try { await fn(); } catch (e) { app.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
@@ -363,6 +363,48 @@ async function pageDevices() {
   timer = setInterval(() => { if (!document.hidden && $('#modal').hidden) render().catch(() => {}); }, 10000);
 }
 
+// ---------------------------------------------------------------- Meshtastic (MQTT)
+
+async function pageMeshtastic() {
+  const render = async () => {
+    const d = await api('GET', 'meshtastic');
+    const nodes = (d.nodes || []).sort((a, b) => new Date(b.heard) - new Date(a.heard));
+    const gws = (d.gateways || []).sort((a, b) => new Date(b.last) - new Date(a.last));
+    const chans = d.channels || [];
+    const name = id => { const n = nodes.find(x => x.id === id); return n && (n.longName || n.shortName) ? `${esc(n.longName || n.shortName)} <span class="small muted">${esc(id)}</span>` : esc(id); };
+    const hops = h => (h == null || h < 0 ? '?' : h === 0 ? 'direct' : h + ' hop' + (h === 1 ? '' : 's'));
+    const fresh = t => (Date.now() - new Date(t)) < 15 * 60000;
+    app.innerHTML = `<h1>Meshtastic</h1>
+      <div class="card"><p class="small">Radios with internet log in to the MQTT broker of this server
+        (${d.port > 0 ? `port <code>${d.port}</code> with TLS` : '<b>off</b> – switch it on under Settings'}${d.plainPort > 0 ? `, <code>${d.plainPort}</code> without TLS` : ''})
+        with a user of this server and pass on what they hear. With the channel key the server opens the packets: positions,
+        chat, markers and drawings reach every TAK device. TAK chat and positions go back into channels with downlink on
+        (as radio <code>${esc(d.serverNode)}</code>; sent ${d.downlinkSent}, waiting ${d.downlinkPending}).</p>
+        <p class="small muted">Radio settings: MQTT on, address <code>&lt;server&gt;:${d.port > 0 ? d.port : 8883}</code>, TLS on, encryption on,
+        root topic <code>opentakserver</code>, the channel with uplink (and downlink) on. WebTAK's "Set up a radio" does all of it.</p>
+        <p>${chans.map(c => `<span class="chip">${esc(c.name)}${c.downlink ? ' ⇅' : ' ↑'}</span>`).join(' ') || '<span class="err">No channel yet – add one in WebTAK (Meshtastic) or over the OTS API. Without the key nothing can be read.</span>'}</p></div>
+      <div class="card table-wrap"><h2>Gateways (${gws.length})</h2><table>
+      <tr><th>Radio</th><th>Channel</th><th>Packets</th><th>User</th><th>Last</th></tr>
+      ${gws.map(g => `<tr><td><span class="dot ${fresh(g.last) ? 'ok' : ''}"></span>${name(g.gateway)}</td><td>${esc(g.channel)}</td><td>${g.packets}</td>
+        <td>${esc(g.username)}</td><td>${ago(g.last)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No radio has sent anything yet.</td></tr>'}
+      </table></div>
+      <div class="card table-wrap"><h2>Connected now (${(d.clients || []).length})</h2><table>
+      <tr><th>Client</th><th>User</th><th>From</th></tr>
+      ${(d.clients || []).map(c => `<tr><td>${name(c.clientId)}</td><td>${esc(c.username)}</td><td class="small muted">${esc(c.remote)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">None.</td></tr>'}
+      </table></div>
+      <div class="card table-wrap"><h2>Radios heard (${nodes.length})</h2><table>
+      <tr><th>Radio</th><th>TAK user</th><th>Via</th><th>Signal at the gateway</th><th>Battery</th><th>Position</th><th>Last heard</th></tr>
+      ${nodes.map(n => `<tr><td>${name(n.id)}</td><td class="small">${esc(n.takUid || '')}</td><td class="small">${name(n.gateway)} · ${hops(n.hops)}</td>
+        <td class="small">${n.gateway === n.id ? '<span class="muted">(the gateway itself)</span>' : n.hops === 0 ? `SNR ${(+n.snr).toFixed(1)} dB · RSSI ${n.rssi} dBm` : '<span class="muted">(relayed)</span>'}</td>
+        <td>${n.battery != null ? (n.battery > 100 ? 'external' : n.battery + ' %') : ''}</td>
+        <td class="small">${n.lat != null ? `${(+n.lat).toFixed(4)}, ${(+n.lon).toFixed(4)}` : '<span class="muted">none</span>'}</td>
+        <td><span class="dot ${fresh(n.heard) ? 'ok' : ''}"></span>${ago(n.heard)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">Nothing heard yet.</td></tr>'}
+      </table></div>`;
+  };
+  await render();
+  timer = setInterval(() => { if (!document.hidden) render().catch(() => {}); }, 10000);
+}
+
 // ---------------------------------------------------------------- map
 
 let mapObj = null;
@@ -647,6 +689,10 @@ async function pageSettings() {
       <label>MediaMTX program (optional – empty = automatic: next to webtak-server, or downloaded on first start)</label>
       <input type="text" name="mediamtxPath" value="${esc(s.mediamtxPath)}" placeholder="automatic">
     </div>
+    <div class="card"><h2>Meshtastic radios (MQTT)</h2>
+      <label class="check"><input type="checkbox" name="mqttOn" ${s.mqttOn ? 'checked' : ''}> MQTT broker for Meshtastic radios with TLS (port 8883 – restart needed)</label>
+      <label class="check"><input type="checkbox" name="mqttPlain" ${s.mqttPlain ? 'checked' : ''}> Also without TLS (port 1883 – only inside a closed network; restart needed)</label>
+    </div>
     <div class="card"><h2>Federation and TAK server bridges</h2>
       <label class="check"><input type="checkbox" name="fedEnabled" ${s.fedEnabled ? 'checked' : ''}> Accept connections from linked servers</label>
       <label>Position of this server (shown as a marker on linked TAK servers) – latitude, longitude</label>
@@ -667,8 +713,9 @@ async function pageSettings() {
     const body = { serverName: f.serverName.value, publicHost: f.publicHost.value, enableTcp: f.enableTcp.checked, anonHttp: f.anonHttp.checked,
       sendLatestSa: f.sendLatestSa.checked, certPassword: f.certPassword.value, contactMaxAge: +f.contactMaxAge.value, fedEnabled: f.fedEnabled.checked,
       webCert: f.webCert.value, webKey: f.webKey.value, videoEnabled: f.videoEnabled.checked, videoReadAuth: f.videoReadAuth.checked,
-      videoFedShare: f.videoFedShare.checked, mediamtxPath: f.mediamtxPath.value, lat: +f.lat.value, lon: +f.lon.value };
-    try { const r = await api('PUT', 'settings', body); toast(r.restart ? 'Saved – restart the server to apply the TCP port change' : 'Saved'); route(); } catch (err) { fail(err); }
+      videoFedShare: f.videoFedShare.checked, mediamtxPath: f.mediamtxPath.value, lat: +f.lat.value, lon: +f.lon.value,
+      mqttOn: f.mqttOn.checked, mqttPlain: f.mqttPlain.checked };
+    try { const r = await api('PUT', 'settings', body); toast(r.restart ? 'Saved – restart the server to apply the port change' : 'Saved'); route(); } catch (err) { fail(err); }
   };
 }
 

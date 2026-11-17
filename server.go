@@ -20,12 +20,14 @@ import (
 var Version = "1.0.0"
 
 type Ports struct {
-	TCP    int // CoT unencrypted
-	SSL    int // CoT TLS with client certificate
-	HTTPS  int // Marti API + web UI
-	HTTP   int // Marti API (plain) + web UI for this computer
-	Enroll int // certificate enrollment (ATAK / iTAK QR)
-	Fed    int // federation
+	TCP       int // CoT unencrypted
+	SSL       int // CoT TLS with client certificate
+	HTTPS     int // Marti API + web UI
+	HTTP      int // Marti API (plain) + web UI for this computer
+	Enroll    int // certificate enrollment (ATAK / iTAK QR)
+	Fed       int // federation
+	MQTT      int // MQTT with TLS for Meshtastic radios
+	MQTTPlain int // MQTT without TLS (only if switched on)
 
 	// video server (MediaMTX), same ports as in OpenTAKServer
 	RTSP      int
@@ -39,7 +41,7 @@ type Ports struct {
 }
 
 func DefaultPorts() Ports {
-	return Ports{TCP: 8088, SSL: 8089, HTTPS: 8443, HTTP: 8080, Enroll: 8446, Fed: 9000,
+	return Ports{TCP: 8088, SSL: 8089, HTTPS: 8443, HTTP: 8080, Enroll: 8446, Fed: 9000, MQTT: 8883, MQTTPlain: 1883,
 		RTSP: 8554, RTMP: 1935, HLS: 8888, WebRTC: 8889, WebRTCUDP: 8189, SRT: 8890, RTP: 8000, MediaAPI: 9997}
 }
 
@@ -54,6 +56,8 @@ type Server struct {
 	packages *PackageStore
 	media    *Media
 	bridges  *Bridges
+	broker   *Broker
+	mesh     *Meshtastic
 	sessions *sessionStore
 	started  time.Time
 
@@ -94,6 +98,9 @@ func NewServer(dataDir string, ports Ports) (*Server, error) {
 	s.hub.fed = s.fed
 	s.media = NewMedia(s)
 	s.bridges = NewBridges(s)
+	s.broker = NewBroker(s)
+	s.mesh = NewMeshtastic(s)
+	s.broker.onPublish = func(topic string, payload []byte, user string) { s.mesh.Handle(topic, payload, user) }
 	return s, nil
 }
 
@@ -132,6 +139,16 @@ func (s *Server) Start() error {
 	try("HTTP", &s.ports.HTTP, func(l net.Listener) { s.serveHTTP(l, "http") })
 	try("Enrollment", &s.ports.Enroll, func(l net.Listener) { s.serveHTTP(l, "enroll") })
 	try("Federation", &s.ports.Fed, func(l net.Listener) { s.fed.Serve(l) })
+	if !cfg.MQTTOff {
+		try("MQTT (TLS)", &s.ports.MQTT, func(l net.Listener) { s.serveMQTT(l, true) })
+	} else {
+		s.ports.MQTT = -1
+	}
+	if cfg.MQTTPlain {
+		try("MQTT", &s.ports.MQTTPlain, func(l net.Listener) { s.serveMQTT(l, false) })
+	} else {
+		s.ports.MQTTPlain = -1
+	}
 	for _, p := range problems {
 		logf("WARNING %s", p)
 	}
@@ -142,6 +159,8 @@ func (s *Server) Start() error {
 		logf("WARNING video server: %v", err)
 	}
 	s.fed.Start()
+	s.wg.Add(1)
+	go func() { defer s.wg.Done(); s.mesh.down.run(s.ctx.Done()) }()
 	s.bridges.Start()
 	s.wg.Add(1)
 	go s.maintenance()

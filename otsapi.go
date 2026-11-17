@@ -2,7 +2,7 @@ package main
 
 // OpenTAKServer-compatible web API (/api/...): tools written for OTS (e.g. WebTAK on port 5036) can
 // manage this server the same way – login, users, roles, groups, devices, ATAK QR, truststore,
-// device profiles, missions. Video (MediaMTX) and Meshtastic are not part of this server.
+// device profiles, missions, video (MediaMTX) and Meshtastic channels (MQTT, meshtastic.go).
 
 import (
 	"encoding/base64"
@@ -480,6 +480,8 @@ func (s *Server) handleOTSAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		otsOK(w, "Stream deleted")
+	case p == "/api/meshtastic/gateways" && m == "GET": // WebTAK extension: radios, gateways, link quality
+		writeJSON(w, 200, s.mesh.Status())
 	case p == "/api/meshtastic/generate_psk":
 		writeJSON(w, 200, map[string]any{"psk": base64.StdEncoding.EncodeToString(randomBytes(32))})
 	case p == "/api/meshtastic/channel" && m == "GET":
@@ -494,7 +496,7 @@ func (s *Server) handleOTSAPI(w http.ResponseWriter, r *http.Request) {
 		})
 		writeJSON(w, 200, paginate(r, list))
 	case p == "/api/meshtastic/channel" && m == "POST":
-		// channels are only stored and listed (WebTAK talks to Meshtastic radios itself)
+		// channels: their keys open what radios send over MQTT (meshtastic.go); WebTAK sets radios to the link
 		var b map[string]any
 		readJSON(r, &b)
 		name, _ := b["name"].(string)
@@ -502,6 +504,45 @@ func (s *Server) handleOTSAPI(w http.ResponseWriter, r *http.Request) {
 		psk, _ := b["psk"].(string)
 		if strings.TrimSpace(name) == "" && strings.TrimSpace(u) == "" {
 			otsErr(w, 400, "Channel name or URL missing")
+			return
+		}
+		if strings.TrimSpace(u) == "" { // like OTS: make the channel link from the settings
+			key, err := base64.StdEncoding.DecodeString(psk)
+			if err != nil || (len(key) != 0 && len(key) != 1 && len(key) != 16 && len(key) != 32) {
+				otsErr(w, 400, "PSK: base64, 1, 16 or 32 bytes")
+				return
+			}
+			str := func(k, def string) string {
+				v, _ := b[k].(string)
+				if v == "" {
+					return def
+				}
+				return v
+			}
+			flag := func(k string) bool { v, ok := b[k].(bool); return !ok || v }
+			num := func(k string, def int) int {
+				if v, ok := b[k].(float64); ok {
+					return int(v)
+				}
+				return def
+			}
+			u = channelURL(name, key, str("modem_preset", "LONG_FAST"), str("lora_region", "EU_868"), flag("uplink_enabled"), flag("downlink_enabled"),
+				num("lora_hop_limit", 3), num("position_precision", 32))
+			b["url"] = u
+		} else if names, psks, _, err := parseChannelURL(u); err != nil || len(names) == 0 {
+			otsErr(w, 400, "Channel link not readable")
+			return
+		} else if strings.TrimSpace(name) == "" {
+			name, psk = names[0], base64.StdEncoding.EncodeToString(psks[0])
+		}
+		dup := false
+		s.store.Read(func(st *State) {
+			for _, c := range st.Mesh {
+				dup = dup || c.URL == u
+			}
+		})
+		if dup {
+			otsErr(w, 400, "Channel already exists")
 			return
 		}
 		data, _ := json.Marshal(b)

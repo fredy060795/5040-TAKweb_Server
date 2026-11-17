@@ -80,6 +80,8 @@ func main() {
 	flag.IntVar(&ports.HTTP, "port-http", ports.HTTP, "HTTP port (Marti API, web interface for this computer)")
 	flag.IntVar(&ports.Enroll, "port-enroll", ports.Enroll, "certificate enrollment port")
 	flag.IntVar(&ports.Fed, "port-fed", ports.Fed, "federation port")
+	flag.IntVar(&ports.MQTT, "port-mqtt", ports.MQTT, "MQTT port with TLS for Meshtastic radios")
+	flag.IntVar(&ports.MQTTPlain, "port-mqtt-plain", ports.MQTTPlain, "MQTT port without TLS (only if switched on in the settings)")
 	flag.IntVar(&ports.RTSP, "port-rtsp", ports.RTSP, "video: RTSP port (-1 = off)")
 	flag.IntVar(&ports.RTMP, "port-rtmp", ports.RTMP, "video: RTMP port (-1 = off)")
 	flag.IntVar(&ports.HLS, "port-hls", ports.HLS, "video: HLS port (-1 = off)")

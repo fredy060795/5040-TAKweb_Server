@@ -11,6 +11,7 @@ services:
       - "8080:8080"   # Marti API (HTTP)
       - "8446:8446"   # certificate enrollment
       - "9000:9000"   # federation
+      - "8883:8883"   # MQTT (Meshtastic radios)
       - "8554:8554"   # video RTSP
       - "1935:1935"   # video RTMP (drones, OBS)
       - "8888:8888"   # video HLS
